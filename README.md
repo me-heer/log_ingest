@@ -1,7 +1,7 @@
 # Log Ingester
 Ingests log entries from clients, writes them to a file, and uploads them to AWS S3.
 
-![architecture.png](https://github.com/me-heer/log_ingest/blob/main/Architecture.png)
+![architecture.png](https://github.com/me-heer/log_ingester/blob/main/Architecture.png)
 
 ### Running
 ```bash
@@ -10,7 +10,7 @@ $ cd log_ingest
 $ go run main.go
 # optional: go run sample_log_producer.go
 ```
-- [sample_log_producer.go](https://github.com/me-heer/log_ingest/blob/main/sample_log_producer.go) can be used for testing to send logs to `http://localhost:8080/ingest` every 500 milliseconds.
+- [sample_log_producer.go](https://github.com/me-heer/log_ingester/blob/main/sample_log_producer.go) can be used for testing to send logs to `http://localhost:8080/ingest` every 500 milliseconds.
 
 ### Endpoints
 

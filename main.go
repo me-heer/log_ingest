@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/joho/godotenv"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -30,6 +29,7 @@ var (
 	logChannel           = make(chan LogEntry, 100000)
 	inMemorySearchBuffer []LogEntry
 	logsDirectory        = "./logs"
+	s3Client             *s3.S3
 	accessKeyID          = os.Getenv("AWS_ACCESS_KEY_ID")
 	secretAccessKey      = os.Getenv("AWS_SECRET_ACCESS_KEY")
 	region               = os.Getenv("AWS_REGION")
@@ -179,20 +179,10 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getS3ObjectByKey(bucketName, key string) ([]byte, error) {
-	// Create a new AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(region),
-		Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
-	})
-	if err != nil {
-		log.Fatalf("Error creating AWS session: %v", err)
-	}
-
-	// Create an S3 client
-	svc := s3.New(sess)
+	client := getS3Client()
 
 	key = s3ObjectKeysPrefix + key
-	resp, err := svc.GetObject(&s3.GetObjectInput{
+	resp, err := client.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(key),
 	})
@@ -201,13 +191,26 @@ func getS3ObjectByKey(bucketName, key string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	// Read the object content
-	objectContent, err := ioutil.ReadAll(resp.Body)
+	objectContent, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading object content: %v", err)
 	}
 
 	return objectContent, nil
+}
+
+func getS3Client() *s3.S3 {
+	if s3Client == nil {
+		sess, err := session.NewSession(&aws.Config{
+			Region:      aws.String(region),
+			Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
+		})
+		if err != nil {
+			log.Fatalf("Error creating AWS session: %v", err)
+		}
+		s3Client = s3.New(sess)
+	}
+	return s3Client
 }
 
 /*
@@ -220,32 +223,18 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// Create a new AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(region),
-		Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
-	})
-	if err != nil {
-		log.Fatalf("Error creating AWS session: %v", err)
-		return
-	}
 
-	// Create an S3 client
-	svc := s3.New(sess)
+	client := getS3Client()
 
-	// Initialize the list of keys
 	var keys []string
 
-	// List objects in the bucket
-	err = svc.ListObjectsPages(&s3.ListObjectsInput{
+	err := client.ListObjectsPages(&s3.ListObjectsInput{
 		Prefix: aws.String(s3ObjectKeysPrefix),
 		Bucket: aws.String(bucketName),
 	}, func(page *s3.ListObjectsOutput, lastPage bool) bool {
-		// Append keys to the list
 		for _, obj := range page.Contents {
 			keys = append(keys, *obj.Key)
 		}
-		// Return true to continue listing if there are more pages
 		return !lastPage
 	})
 	if err != nil {
@@ -253,16 +242,14 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert the list of keys to JSON
 	keysJSON, err := json.Marshal(keys)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("error marshalling keys to JSON: %v", err), http.StatusInternalServerError)
 		return
 	}
-	// Set Content-Type header
+
 	w.Header().Set("Content-Type", "application/json")
 
-	// Write the JSON response
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(keysJSON)
 	if err != nil {
@@ -271,14 +258,12 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func periodicallyWriteToStorage() {
-	// Create a ticker to trigger write operations every 5 seconds
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			// Read all log entries from the channel
 			var logs []LogEntry
 			for {
 				select {
@@ -309,7 +294,6 @@ func periodicallyWriteToStorage() {
 						}
 						defer f.Close()
 
-						// Write sorted log entries to the file
 						for _, entry := range logs {
 							_, err := fmt.Fprintf(f, "{\"time\":  %d, \"log\":\"%s\"}\n", entry.Timestamp, entry.Message)
 							if err != nil {
@@ -317,10 +301,8 @@ func periodicallyWriteToStorage() {
 							}
 						}
 
-						// Clear the logs slice
 						logs = nil
 					}
-					// Break the inner loop and wait for the next tick
 					break
 				}
 			}
@@ -330,26 +312,21 @@ func periodicallyWriteToStorage() {
 
 func periodicallyUploadToS3() {
 	for {
-		// List all files in logsDirectory
 		files, err := os.ReadDir(logsDirectory)
 		if err != nil {
 			log.Printf("Error reading directory: %v", err)
 			continue
 		}
 
-		// Get the current time
 		currentTime := time.Now()
 
-		// Iterate over files
 		for _, file := range files {
-			// Get the file modification time
 			fileInfo, err := file.Info()
 			if err != nil {
 				log.Printf("Error reading file info: %v", err)
 				continue
 			}
 
-			// Calculate the time difference
 			diff := currentTime.Sub(fileInfo.ModTime()).Seconds()
 
 			// Since we create files per minute, if the file is older than a minute, we can upload it since it will not be used again
@@ -359,20 +336,17 @@ func periodicallyUploadToS3() {
 			}
 		}
 
-		// Sleep for some time before the next scan
 		time.Sleep(1 * time.Second)
 	}
 }
 
 func uploadToS3WithPrefix(fileName string) {
-	// Read all lines from the file
 	fileLines, err := os.ReadFile(fileName)
 	if err != nil {
 		log.Printf("Error reading file: %v", err)
 		return
 	}
 
-	// Parse each line into a LogEntry
 	var logEntries []LogEntry
 	for _, line := range strings.Split(string(fileLines), "\n") {
 		var entry LogEntry
@@ -386,28 +360,16 @@ func uploadToS3WithPrefix(fileName string) {
 		logEntries = append(logEntries, entry)
 	}
 
-	// Marshal the log entries into JSON format
 	jsonData, err := json.Marshal(logEntries)
 	if err != nil {
 		log.Printf("Error marshalling log entries: %v", err)
 		return
 	}
 
-	// Create a new AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(region),
-		Credentials: credentials.NewStaticCredentials(accessKeyID, secretAccessKey, ""),
-	})
-	if err != nil {
-		log.Fatalf("Error creating AWS session: %v", err)
-		return
-	}
-
-	// Create an S3 client
-	svc := s3.New(sess)
+	client := getS3Client()
 
 	logKey := s3ObjectKeysPrefix + strings.TrimSuffix(filepath.Base(fileName), filepath.Ext(fileName))
-	_, err = svc.PutObject(&s3.PutObjectInput{
+	_, err = client.PutObject(&s3.PutObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(logKey),
 		Body:   bytes.NewReader(jsonData),
@@ -426,7 +388,6 @@ func uploadToS3WithPrefix(fileName string) {
 }
 
 func init() {
-	// Load environment variables from .env file
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatalf("Error loading .env file: %v", err)

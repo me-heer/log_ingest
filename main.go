@@ -27,13 +27,14 @@ type LogEntry struct {
 }
 
 var (
-	logChannel         = make(chan LogEntry, 100000)
-	logsDirectory      = "./logs"
-	accessKeyID        = os.Getenv("AWS_ACCESS_KEY_ID")
-	secretAccessKey    = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	region             = os.Getenv("AWS_REGION")
-	bucketName         = os.Getenv("S3_BUCKET_NAME")
-	s3ObjectKeysPrefix = "mihir_joshi/"
+	logChannel           = make(chan LogEntry, 100000)
+	inMemorySearchBuffer []LogEntry
+	logsDirectory        = "./logs"
+	accessKeyID          = os.Getenv("AWS_ACCESS_KEY_ID")
+	secretAccessKey      = os.Getenv("AWS_SECRET_ACCESS_KEY")
+	region               = os.Getenv("AWS_REGION")
+	bucketName           = os.Getenv("S3_BUCKET_NAME")
+	s3ObjectKeysPrefix   = "mihir_joshi/"
 )
 
 /*
@@ -156,6 +157,15 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	for _, entry := range inMemorySearchBuffer {
+		entryTimestamp := time.Unix(entry.Timestamp, 0)
+		if entryTimestamp.After(startTime) && entryTimestamp.Before(endTime) {
+			if textFilter == "" || strings.Contains(entry.Message, textFilter) {
+				result = append(result, entry)
+			}
+		}
+	}
+
 	// Marshal the filtered log entries and send as response
 	responseData, err := json.Marshal(result)
 	if err != nil {
@@ -274,6 +284,7 @@ func periodicallyWriteToStorage() {
 				select {
 				case logEntry := <-logChannel:
 					logs = append(logs, logEntry)
+					inMemorySearchBuffer = append(inMemorySearchBuffer, logEntry)
 				default:
 					if len(logs) > 0 {
 						sort.Slice(logs, func(i, j int) bool {
@@ -344,6 +355,7 @@ func periodicallyUploadToS3() {
 			// Since we create files per minute, if the file is older than a minute, we can upload it since it will not be used again
 			if diff >= 5 { // allowing for a 5-second delay in file update
 				uploadToS3WithPrefix(filepath.Join(logsDirectory, file.Name()))
+				inMemorySearchBuffer = nil
 			}
 		}
 

@@ -7,6 +7,7 @@ Ingests log entries from clients, writes them to a file, and uploads them to AWS
 ```bash
 $ git clone https://github.com/me-heer/log_ingest.git
 $ cd log_ingest
+# IMPORTANT: Update .env file and add your credentials
 $ go run main.go
 # optional: go run sample_log_producer.go
 ```
